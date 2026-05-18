@@ -1,0 +1,178 @@
+name: Full Decode Obfuscated Files
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # Cho phép chạy thủ công
+
+jobs:
+  decode:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.13'  # Yêu cầu Python 3.13
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pycryptodome uncompyle6
+
+      - name: Create and run full decoder script
+        run: |
+          # Tạo script giải mã hoàn chỉnh
+          cat > full_decoder.py << 'EOF'
+          import base64
+          import lzma
+          import marshal
+          import os
+          import re
+          import dis
+          from Crypto.Cipher import AES
+          from Crypto.Util.Padding import unpad
+
+          def try_decode_base85(encoded_data):
+              try:
+                  return base64.b85decode(encoded_data.encode('utf-8'))
+              except:
+                  return None
+
+          def try_decompress_lzma(data):
+              try:
+                  return lzma.decompress(data)
+              except:
+                  return None
+
+          def try_unmarshal(data):
+              try:
+                  return marshal.loads(data)
+              except:
+                  return None
+
+          def try_xor_decrypt(data, key=0x55):
+              try:
+                  return bytes([b ^ key for b in data]).decode('utf-8', errors='ignore')
+              except:
+                  return None
+
+          def try_decompile_bytecode(code_obj):
+              try:
+                  import uncompyle6
+                  return uncompyle6.decompile(code_obj)
+              except:
+                  return None
+
+          def is_bytecode(obj):
+              return hasattr(obj, 'co_code') and hasattr(obj, 'co_consts')
+
+          def is_valid_python_code(code):
+              try:
+                  compile(code, '<string>', 'exec')
+                  return True
+              except:
+                  return False
+
+          def decode_obfuscated_file(file_path):
+              print(f"\n🔍 Decoding file: {file_path}")
+
+              with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                  content = f.read()
+
+              # Tách chuỗi base64.b85
+              base85_match = re.search(r"base64\.b85decode\(b'([^']+)'\)", content)
+              if not base85_match:
+                  print("❌ No base64.b85decode string found!")
+                  return None
+
+              encoded_data = base85_match.group(1)
+              print("✅ Found base64.b85 string!")
+
+              # Giải mã base85
+              data = try_decode_base85(encoded_data)
+              if not data:
+                  print("❌ Base85 decode failed!")
+                  return None
+              print("✅ Base85 decode successful!")
+
+              # Giải nén LZMA
+              decompressed = try_decompress_lzma(data)
+              if not decompressed:
+                  print("❌ LZMA decompress failed!")
+                  return None
+              print("✅ LZMA decompress successful!")
+
+              # Giải mã marshal
+              code = try_unmarshal(decompressed)
+              if not code:
+                  print("❌ Marshal loads failed!")
+                  return None
+              print("✅ Marshal loads successful!")
+
+              # Kiểm tra kiểu dữ liệu
+              if isinstance(code, str):
+                  print("✅ Result is a string (source code)!")
+                  if is_valid_python_code(code):
+                      return code
+                  else:
+                      print("⚠️  Result is not valid Python code. There may be another layer.")
+                      return None
+
+              elif isinstance(code, bytes):
+                  print("⚠️  Result is bytes. Trying additional decryption...")
+                  xor_result = try_xor_decrypt(code)
+                  if xor_result and is_valid_python_code(xor_result):
+                      print("✅ XOR decryption successful!")
+                      return xor_result
+                  print("❌ Could not decrypt with XOR. May be bytecode.")
+                  return None
+
+              elif is_bytecode(code):
+                  print("⚠️  Result is bytecode. Decompiling...")
+                  decompiled = try_decompile_bytecode(code)
+                  if decompiled:
+                      print("✅ Bytecode decompilation successful!")
+                      return decompiled
+                  else:
+                      print("❌ Could not decompile bytecode. Displaying bytecode:")
+                      dis.dis(code)
+                      return None
+
+              else:
+                  print(f"❌ Unknown data type: {type(code)}")
+                  return None
+
+          def save_decoded_file(file_path, decoded_content):
+              output_file = file_path.replace('.py', '_FULL_DECODED.py')
+              with open(output_file, 'w', encoding='utf-8') as f:
+                  f.write(decoded_content)
+              print(f"✅ Saved decoded result to: {output_file}")
+              return output_file
+
+          # Chạy giải mã
+          files = [
+              'clean_Checkkey_Home_IOS_Fram.py',
+              'clean_obf-bumx_fb.py'
+          ]
+
+          for file in files:
+              if os.path.exists(file):
+                  decoded = decode_obfuscated_file(file)
+                  if decoded:
+                      save_decoded_file(file, decoded)
+              else:
+                  print(f"❌ File not found: {file}")
+          EOF
+
+          # Chạy script
+          python full_decoder.py
+
+      - name: Upload decoded files as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: full-decoded-files
+          path: |
+            *_FULL_DECODED.py
